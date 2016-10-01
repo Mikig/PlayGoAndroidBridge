@@ -1,5 +1,7 @@
 package michal.playgoandroidbridge;
 
+import android.Manifest;
+import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
@@ -8,10 +10,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
+import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.telephony.SmsManager;
@@ -39,6 +43,7 @@ public class PlayGoActivity extends AppCompatActivity {
     final UUID PLAYGO_BLUETOOTH_UUID = UUID.fromString("8e7d70e5-5668-41c7-8978-a72a1e43616b");
     TextView textMain = null;
     int msgCounter = 0;
+    int connectionCounter = 0;
     private static int lastState = TelephonyManager.CALL_STATE_IDLE;
     private static Date callStartTime;
     private static boolean isIncoming;
@@ -70,7 +75,29 @@ public class PlayGoActivity extends AppCompatActivity {
 
     }
 
+    @Override
+    protected void onStart() {
+        super.onStart();
+        //When needed (for example inside .onStart event) use method PermissionManager.check for requested permission
+        checkPermission(this, Manifest.permission.RECEIVE_SMS, 1);
+        checkPermission(this, Manifest.permission.READ_PHONE_STATE, 2);
+        checkPermission(this, Manifest.permission.PROCESS_OUTGOING_CALLS, 3);
+    }
 
+
+    //3. Handle User's response for your permission request
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if(requestCode==1 || requestCode==2 || requestCode == 3){//response for SMS permission request
+            if(grantResults[0]==PackageManager.PERMISSION_GRANTED){
+                //What to do if User allowed SMS permission
+                updateText("Got permission to listen for Phone/SMS, please continue");
+            }else{
+                //What to do if user disallowed requested SMS permission
+                updateText("No permission to listen for Phone/SMS, messages will not be sent");
+            }
+        }
+    }
     public void updateText(final String text){
         if(textMain != null) {
             runOnUiThread(new Runnable() {
@@ -109,6 +136,8 @@ public class PlayGoActivity extends AppCompatActivity {
 
     public static boolean sendBluetoothMsg(String msg)
     {
+
+
         if(conThread != null)
             if(conThread.isAlive())
             {
@@ -133,9 +162,13 @@ public class PlayGoActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
-    private void sendSms(String msg) {
-        SharedPreferences sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
-        String ph = sharedPref.getString(SettingsActivity.KEY_PREF_PHONE_NUM, "");
+    private void sendSms(String msg, String phoneNum) {
+            SharedPreferences sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
+            String ph = sharedPref.getString(SettingsActivity.KEY_PREF_PHONE_NUM, "");
+
+        if(phoneNum != null && phoneNum.isEmpty() == false) {
+            ph = phoneNum;
+        }
         SmsManager smsManager = SmsManager.getDefault();
         smsManager.sendTextMessage(ph, null,msg, null, null);
     }
@@ -190,6 +223,7 @@ public class PlayGoActivity extends AppCompatActivity {
 
         public void run() {
             BluetoothSocket socket = null;
+            BluetoothSocket openSocket = null;
             // Keep listening until exception occurs or a socket is returned
             while (true) {
                 try {
@@ -202,15 +236,34 @@ public class PlayGoActivity extends AppCompatActivity {
                 if (socket != null) {
                     // Do work to manage the connection (in a separate thread)
 
-                    updateText("Connected");
-                    manageConnectedSocket(socket);
-                    try {
-                        mmServerSocket.close();
-                    } catch (IOException e) {
-                        Log.w("PlayGoConnection", "server socket closed exception " + e.getMessage());
-                        e.printStackTrace();
+                    if(openSocket != null)
+                    {
+                        try {
+                            openSocket.close();
+                            conThread.cancel();
+                        } catch (IOException e) {
+                            Log.w("PlayGoConnection", "Unable to close existing socket");
+                            e.printStackTrace();
+                        }
+
+                        updateText("Reopening Connection to PlayGo, repeat "  + connectionCounter);
+                        connectionCounter++;
                     }
-                    break;
+                    else {
+                        updateText("Connected to PlayGo");
+                        connectionCounter = 1;
+                    }
+                    manageConnectedSocket(socket);
+
+                    openSocket = socket;
+                    //if we wanted to open only a single connection and retire, we would stop here.
+//                    try {
+//                        mmServerSocket.close();
+//                    } catch (IOException e) {
+//                        Log.w("PlayGoConnection", "server socket closed exception " + e.getMessage());
+//                        e.printStackTrace();
+//                    }
+//                    break;
                 }
             }
         }
@@ -264,7 +317,7 @@ public class PlayGoActivity extends AppCompatActivity {
             int bytes; // bytes returned from read()
 
             // Keep listening to the InputStream until an exception occurs
-            while (true) {
+            while (mmSocket.isConnected()) {
                 String msg = "";
                 try {
                     // Read from the InputStream
@@ -276,7 +329,13 @@ public class PlayGoActivity extends AppCompatActivity {
                         Log.i("PlayGoConnection", "received buffer " + msg);
 
                         if(msg.startsWith("PlayGo SMS")) {
-                            sendSms(msg);
+                            String [] parts = msg.split(":");
+                            if(parts.length == 2) {
+                                sendSms(parts[1], null);
+                            }
+                            else if(parts.length == 3){
+                                sendSms(parts[1], parts[2]);
+                            }
                         }
                         updateText(msg + "\r\n" + "received " + msgCounter++);
 
@@ -321,6 +380,13 @@ public class PlayGoActivity extends AppCompatActivity {
     }
 
 
-
+    //A method that can be called from any Activity, to check for specific permission
+    public static void checkPermission(Activity activity, String permission, int requestCode){
+        //If requested permission isn't Granted yet
+        if (ActivityCompat.checkSelfPermission(activity, permission) != PackageManager.PERMISSION_GRANTED) {
+            //Request permission from user
+            ActivityCompat.requestPermissions(activity,new String[]{permission},requestCode);
+        }
+    }
 
 }
